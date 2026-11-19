@@ -282,3 +282,123 @@ BEGIN
         tbl, tbl, CASE WHEN tbl = 'user_profiles' THEN 'id' ELSE 'user_id' END);
     END LOOP;
 END $$;
+
+-- -------------------------------------------------------------------------
+-- 11. TRANSACTIONAL CURRICULUM SEEDING RPC FUNCTION
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.seed_user_curriculum(p_days jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_day_elem jsonb;
+    v_task_elem jsonb;
+    v_day_id UUID;
+    v_existing_task_id UUID;
+    v_days_inserted INT := 0;
+    v_days_existing INT := 0;
+    v_tasks_inserted INT := 0;
+    v_tasks_existing INT := 0;
+BEGIN
+    -- 1. Enforce authenticated user identity
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Authentication required to seed curriculum';
+    END IF;
+
+    -- 2. Transactionally process days and tasks
+    FOR v_day_elem IN SELECT * FROM jsonb_array_elements(p_days)
+    LOOP
+        -- Check if day already exists for this user
+        SELECT id INTO v_day_id
+        FROM public.learning_days
+        WHERE user_id = v_user_id
+          AND day_number = (v_day_elem->>'day_number')::INT;
+
+        IF v_day_id IS NULL THEN
+            INSERT INTO public.learning_days (
+                user_id,
+                day_number,
+                study_date,
+                week_number,
+                title,
+                status,
+                notes
+            ) VALUES (
+                v_user_id,
+                (v_day_elem->>'day_number')::INT,
+                (v_day_elem->>'study_date')::DATE,
+                (v_day_elem->>'week_number')::INT,
+                v_day_elem->>'title',
+                'Not Started',
+                ''
+            )
+            RETURNING id INTO v_day_id;
+
+            v_days_inserted := v_days_inserted + 1;
+        ELSE
+            v_days_existing := v_days_existing + 1;
+        END IF;
+
+        -- Process associated tasks for this day
+        IF v_day_elem ? 'tasks' AND jsonb_typeof(v_day_elem->'tasks') = 'array' THEN
+            FOR v_task_elem IN SELECT * FROM jsonb_array_elements(v_day_elem->'tasks')
+            LOOP
+                -- Check if task already exists for this day and user with matching title
+                SELECT id INTO v_existing_task_id
+                FROM public.learning_tasks
+                WHERE user_id = v_user_id
+                  AND learning_day_id = v_day_id
+                  AND task_title = v_task_elem->>'task_title';
+
+                IF v_existing_task_id IS NULL THEN
+                    INSERT INTO public.learning_tasks (
+                        user_id,
+                        learning_day_id,
+                        subject,
+                        topic,
+                        task_title,
+                        description,
+                        estimated_minutes,
+                        is_completed,
+                        task_status,
+                        original_date,
+                        scheduled_date,
+                        is_carried_forward,
+                        is_backlog
+                    ) VALUES (
+                        v_user_id,
+                        v_day_id,
+                        v_task_elem->>'subject',
+                        v_task_elem->>'topic',
+                        v_task_elem->>'task_title',
+                        COALESCE(v_task_elem->>'description', ''),
+                        COALESCE((v_task_elem->>'estimated_minutes')::INT, 30),
+                        FALSE,
+                        'Not Started',
+                        (v_day_elem->>'study_date')::DATE,
+                        (v_day_elem->>'study_date')::DATE,
+                        FALSE,
+                        FALSE
+                    );
+
+                    v_tasks_inserted := v_tasks_inserted + 1;
+                ELSE
+                    v_tasks_existing := v_tasks_existing + 1;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'days_inserted', v_days_inserted,
+        'days_existing', v_days_existing,
+        'tasks_inserted', v_tasks_inserted,
+        'tasks_existing', v_tasks_existing
+    );
+END;
+$$;
