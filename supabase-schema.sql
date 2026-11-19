@@ -300,7 +300,7 @@ DECLARE
     v_task_elem jsonb;
     v_day_id UUID;
     v_task_key TEXT;
-    v_existing_task_id UUID;
+    v_task_inserted_id UUID;
     v_days_inserted INT := 0;
     v_days_existing INT := 0;
     v_tasks_inserted INT := 0;
@@ -315,7 +315,28 @@ BEGIN
     -- 2. Acquire exclusive transaction-level advisory lock per user to serialize concurrent calls
     PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(v_user_id::text));
 
-    -- 3. Transactionally process days and tasks
+    -- 3. Migration: Backfill curriculum_task_key on any existing unkeyed curriculum tasks
+    FOR v_day_elem IN SELECT * FROM jsonb_array_elements(p_days)
+    LOOP
+        IF v_day_elem ? 'tasks' AND jsonb_typeof(v_day_elem->'tasks') = 'array' THEN
+            FOR v_task_elem IN SELECT * FROM jsonb_array_elements(v_day_elem->'tasks')
+            LOOP
+                v_task_key := v_task_elem->>'curriculum_task_key';
+                IF v_task_key IS NOT NULL THEN
+                    UPDATE public.learning_tasks lt
+                    SET curriculum_task_key = v_task_key
+                    FROM public.learning_days ld
+                    WHERE lt.learning_day_id = ld.id
+                      AND lt.user_id = v_user_id
+                      AND lt.curriculum_task_key IS NULL
+                      AND ld.day_number = (v_day_elem->>'day_number')::INT
+                      AND lt.task_title = v_task_elem->>'task_title';
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+
+    -- 4. Transactionally process days and tasks
     FOR v_day_elem IN SELECT * FROM jsonb_array_elements(p_days)
     LOOP
         -- Insert day or retrieve existing day ID
@@ -356,22 +377,10 @@ BEGIN
             FOR v_task_elem IN SELECT * FROM jsonb_array_elements(v_day_elem->'tasks')
             LOOP
                 v_task_key := v_task_elem->>'curriculum_task_key';
+                v_task_inserted_id := NULL;
 
-                -- Check if task already exists by stable curriculum_task_key
+                -- Insert task with ON CONFLICT DO NOTHING RETURNING id
                 IF v_task_key IS NOT NULL THEN
-                    SELECT id INTO v_existing_task_id
-                    FROM public.learning_tasks
-                    WHERE user_id = v_user_id
-                      AND curriculum_task_key = v_task_key;
-                ELSE
-                    SELECT id INTO v_existing_task_id
-                    FROM public.learning_tasks
-                    WHERE user_id = v_user_id
-                      AND learning_day_id = v_day_id
-                      AND task_title = v_task_elem->>'task_title';
-                END IF;
-
-                IF v_existing_task_id IS NULL THEN
                     INSERT INTO public.learning_tasks (
                         user_id,
                         learning_day_id,
@@ -403,8 +412,45 @@ BEGIN
                         FALSE,
                         v_task_key
                     )
-                    ON CONFLICT (user_id, curriculum_task_key) DO NOTHING;
+                    ON CONFLICT (user_id, curriculum_task_key) DO NOTHING
+                    RETURNING id INTO v_task_inserted_id;
+                ELSE
+                    INSERT INTO public.learning_tasks (
+                        user_id,
+                        learning_day_id,
+                        subject,
+                        topic,
+                        task_title,
+                        description,
+                        estimated_minutes,
+                        is_completed,
+                        task_status,
+                        original_date,
+                        scheduled_date,
+                        is_carried_forward,
+                        is_backlog,
+                        curriculum_task_key
+                    ) VALUES (
+                        v_user_id,
+                        v_day_id,
+                        v_task_elem->>'subject',
+                        v_task_elem->>'topic',
+                        v_task_elem->>'task_title',
+                        COALESCE(v_task_elem->>'description', ''),
+                        COALESCE((v_task_elem->>'estimated_minutes')::INT, 30),
+                        FALSE,
+                        'Not Started',
+                        (v_day_elem->>'study_date')::DATE,
+                        (v_day_elem->>'study_date')::DATE,
+                        FALSE,
+                        FALSE,
+                        NULL
+                    )
+                    RETURNING id INTO v_task_inserted_id;
+                END IF;
 
+                -- Increment metrics strictly when row is actually inserted
+                IF v_task_inserted_id IS NOT NULL THEN
                     v_tasks_inserted := v_tasks_inserted + 1;
                 ELSE
                     -- Existing task preserved (custom title, completion, notes untouched)
@@ -420,6 +466,88 @@ BEGIN
         'days_existing', v_days_existing,
         'tasks_inserted', v_tasks_inserted,
         'tasks_existing', v_tasks_existing
+    );
+END;
+$$;
+
+-- -------------------------------------------------------------------------
+-- 12. TRANSACTIONAL TASK RESCHEDULE / CARRY-FORWARD RPC FUNCTION
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.reschedule_task(
+    p_task_id UUID,
+    p_destination_day_id UUID,
+    p_new_scheduled_date DATE,
+    p_is_backlog BOOLEAN,
+    p_reason TEXT DEFAULT ''
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_task_record RECORD;
+BEGIN
+    -- 1. Strictly enforce authenticated user identity
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Authentication required to reschedule task';
+    END IF;
+
+    -- 2. Fetch task and ensure ownership
+    SELECT * INTO v_task_record
+    FROM public.learning_tasks
+    WHERE id = p_task_id AND user_id = v_user_id;
+
+    IF v_task_record.id IS NULL THEN
+        RAISE EXCEPTION 'Task not found or access denied';
+    END IF;
+
+    -- 3. Validate destination day ownership if not moving to backlog
+    IF p_is_backlog IS FALSE THEN
+        IF p_destination_day_id IS NULL THEN
+            RAISE EXCEPTION 'Destination day is required when not rescheduling to backlog';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM public.learning_days
+            WHERE id = p_destination_day_id AND user_id = v_user_id
+        ) THEN
+            RAISE EXCEPTION 'Destination day does not belong to the authenticated user';
+        END IF;
+    END IF;
+
+    -- 4. Transactionally update task record
+    UPDATE public.learning_tasks
+    SET learning_day_id = CASE WHEN p_is_backlog THEN NULL ELSE p_destination_day_id END,
+        scheduled_date = CASE WHEN p_is_backlog THEN v_task_record.scheduled_date ELSE p_new_scheduled_date END,
+        is_carried_forward = TRUE,
+        is_backlog = p_is_backlog,
+        updated_at = NOW()
+    WHERE id = p_task_id AND user_id = v_user_id;
+
+    -- 5. Insert audit log into task_reschedule_history
+    INSERT INTO public.task_reschedule_history (
+        user_id,
+        task_id,
+        from_date,
+        to_date,
+        reason,
+        rescheduled_at
+    ) VALUES (
+        v_user_id,
+        p_task_id,
+        v_task_record.scheduled_date,
+        CASE WHEN p_is_backlog THEN NULL ELSE p_new_scheduled_date END,
+        COALESCE(p_reason, ''),
+        NOW()
+    );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'task_id', p_task_id,
+        'is_backlog', p_is_backlog,
+        'new_scheduled_date', CASE WHEN p_is_backlog THEN NULL ELSE p_new_scheduled_date END
     );
 END;
 $$;

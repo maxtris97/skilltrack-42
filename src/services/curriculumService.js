@@ -1,5 +1,5 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
-import { CURRICULUM_42_DAYS } from '../data/curriculum42Days';
+import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
+import { CURRICULUM_42_DAYS } from '../data/curriculum42Days.js';
 
 // In-flight guard to prevent multiple concurrent seeding calls in the client
 let isSeedingInProgress = false;

@@ -1,9 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   CalendarCheck2,
-  Filter,
   Plus,
-  ArrowRight,
   ArrowLeftRight,
   Clock,
   Sparkles,
@@ -12,6 +10,10 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
+  FileText,
+  Edit2,
+  Trash2,
+  Archive,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -20,8 +22,21 @@ import {
   fetchCurriculumDays,
   toggleTaskCompletion,
 } from '../services/curriculumService';
+import {
+  createCustomTask,
+  updateTask,
+  deleteTask,
+  rescheduleTask,
+  updateDayNotes,
+  fetchAllDaysBasic,
+} from '../services/plannerService';
+
 import StatusBadge from '../components/common/StatusBadge';
 import EmptyState from '../components/common/EmptyState';
+import TaskModal from '../components/planner/TaskModal';
+import CarryForwardModal from '../components/planner/CarryForwardModal';
+import DayNotesModal from '../components/planner/DayNotesModal';
+import ConfirmModal from '../components/common/ConfirmModal';
 
 const WEEKS = [
   { id: 1, label: 'Week 1: Nov 20–26', title: 'Java & Python Fundamentals' },
@@ -37,11 +52,27 @@ export default function PlannerPage() {
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [curriculumStatus, setCurriculumStatus] = useState(null);
   const [days, setDays] = useState([]);
+  const [allDaysBasic, setAllDaysBasic] = useState([]);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState('');
   const [feedbackErr, setFeedbackErr] = useState('');
   const [expandedDayId, setExpandedDayId] = useState(null);
+
+  // Modals state
+  const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [taskModalMode, setTaskModalMode] = useState('create');
+  const [activeTask, setActiveTask] = useState(null);
+  const [activeDayId, setActiveDayId] = useState(null);
+  const [activeDayNumber, setActiveDayNumber] = useState(null);
+
+  const [rescheduleModalOpen, setRescheduleModalOpen] = useState(false);
+  const [notesModalOpen, setNotesModalOpen] = useState(false);
+  const [activeNotesDay, setActiveNotesDay] = useState(null);
+
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [taskToDelete, setTaskToDelete] = useState(null);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const loadCurriculum = useCallback(async () => {
     if (!user) return;
@@ -52,10 +83,16 @@ export default function PlannerPage() {
       setCurriculumStatus(status);
 
       if (status.hasCurriculum || status.isPartial) {
-        const { data } = await fetchCurriculumDays(user.id, selectedWeek);
-        setDays(data || []);
-        if (data && data.length > 0 && !expandedDayId) {
-          setExpandedDayId(data[0].id);
+        const [{ data: weekDays }, { data: basicDays }] = await Promise.all([
+          fetchCurriculumDays(user.id, selectedWeek),
+          fetchAllDaysBasic(user.id),
+        ]);
+
+        setDays(weekDays || []);
+        setAllDaysBasic(basicDays || []);
+
+        if (weekDays && weekDays.length > 0 && !expandedDayId) {
+          setExpandedDayId(weekDays[0].id);
         }
       } else {
         setDays([]);
@@ -65,12 +102,13 @@ export default function PlannerPage() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedWeek]);
+  }, [user, selectedWeek, expandedDayId]);
 
   useEffect(() => {
     loadCurriculum();
   }, [loadCurriculum]);
 
+  // Seeding
   const handleSeed = async () => {
     if (!user) return;
     setSeeding(true);
@@ -81,7 +119,7 @@ export default function PlannerPage() {
       const res = await seedCurriculum(user.id);
       if (res.success) {
         setFeedbackMsg(
-          `Curriculum synced successfully! Days inserted: ${res.daysInserted}, Tasks inserted: ${res.tasksInserted} (${res.daysExisting} days already existed).`
+          `Curriculum seeded via ${res.method}: ${res.daysInserted} days inserted (${res.daysExisting} existing), ${res.tasksInserted} tasks inserted (${res.tasksExisting} existing).`
         );
         await loadCurriculum();
       } else {
@@ -94,6 +132,7 @@ export default function PlannerPage() {
     }
   };
 
+  // Toggle Checkbox
   const handleToggleTask = async (taskId, currentStatus) => {
     const newStatus = !currentStatus;
 
@@ -111,9 +150,94 @@ export default function PlannerPage() {
 
     const { error } = await toggleTaskCompletion(taskId, newStatus);
     if (error) {
-      // Revert on failure
       loadCurriculum();
     }
+  };
+
+  // Task Creation & Editing
+  const openCreateTaskModal = (dayId, dayNum) => {
+    setActiveDayId(dayId);
+    setActiveDayNumber(dayNum);
+    setActiveTask(null);
+    setTaskModalMode('create');
+    setTaskModalOpen(true);
+  };
+
+  const openEditTaskModal = (task) => {
+    setActiveTask(task);
+    setTaskModalMode('edit');
+    setTaskModalOpen(true);
+  };
+
+  const handleSaveTask = async (taskPayload) => {
+    if (taskModalMode === 'create') {
+      const { error } = await createCustomTask(user.id, activeDayId, taskPayload);
+      if (error) throw error;
+      setFeedbackMsg('Custom task created successfully.');
+    } else {
+      const { error } = await updateTask(activeTask.id, taskPayload);
+      if (error) throw error;
+      setFeedbackMsg('Task updated successfully.');
+    }
+    await loadCurriculum();
+  };
+
+  // Task Deletion
+  const promptDeleteTask = (task) => {
+    setTaskToDelete(task);
+    setDeleteModalOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!taskToDelete) return;
+    setActionLoading(true);
+    try {
+      const { error } = await deleteTask(taskToDelete.id);
+      if (error) throw error;
+      setDeleteModalOpen(false);
+      setTaskToDelete(null);
+      setFeedbackMsg('Task deleted successfully.');
+      await loadCurriculum();
+    } catch (err) {
+      setFeedbackErr(err.message || 'Failed to delete task.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Task Carry Forward / Reschedule
+  const openRescheduleModal = (task) => {
+    setActiveTask(task);
+    setRescheduleModalOpen(true);
+  };
+
+  const handleReschedule = async ({ taskId, destinationDayId, newScheduledDate, isBacklog, reason }) => {
+    const res = await rescheduleTask(taskId, destinationDayId, newScheduledDate, isBacklog, reason);
+    if (res.success) {
+      setFeedbackMsg(
+        isBacklog
+          ? 'Task successfully moved to Unscheduled Backlog.'
+          : `Task rescheduled to ${newScheduledDate}.`
+      );
+      await loadCurriculum();
+    }
+    return res;
+  };
+
+  // Day Notes
+  const openDayNotesModal = (day) => {
+    setActiveNotesDay(day);
+    setNotesModalOpen(true);
+  };
+
+  const handleSaveDayNotes = async (dayId, notes) => {
+    const res = await updateDayNotes(dayId, notes);
+    if (!res.error) {
+      setDays((prevDays) =>
+        prevDays.map((d) => (d.id === dayId ? { ...d, notes } : d))
+      );
+    }
+    return res;
   };
 
   const currentWeekInfo = WEEKS.find((w) => w.id === selectedWeek);
@@ -139,7 +263,7 @@ export default function PlannerPage() {
               onClick={handleSeed}
               disabled={seeding}
               className="inline-flex items-center gap-1.5 rounded-xl border border-surface-border bg-surface px-3 py-2 text-xs font-medium text-slate-300 hover:bg-surface-elevated hover:text-white disabled:opacity-50 cursor-pointer"
-              title="Ensure all 42 days and tasks exist without overwriting progress"
+              title="Verify missing tasks without overwriting progress"
             >
               {seeding ? (
                 <>
@@ -244,6 +368,7 @@ export default function PlannerPage() {
             const tasks = day.learning_tasks || [];
             const completedCount = tasks.filter((t) => t.is_completed).length;
             const isAllCompleted = tasks.length > 0 && completedCount === tasks.length;
+            const hasNotes = Boolean(day.notes?.trim());
 
             return (
               <div
@@ -255,11 +380,11 @@ export default function PlannerPage() {
                 }`}
               >
                 {/* Day Header Bar */}
-                <div
-                  onClick={() => setExpandedDayId(isExpanded ? null : day.id)}
-                  className="flex items-center justify-between p-4 cursor-pointer select-none"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
+                <div className="flex items-center justify-between p-4 select-none">
+                  <div
+                    onClick={() => setExpandedDayId(isExpanded ? null : day.id)}
+                    className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                  >
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-xs font-bold font-mono text-indigo-400">
                       D{day.day_number}
                     </span>
@@ -273,32 +398,74 @@ export default function PlannerPage() {
                             <CheckCircle2 className="h-3.5 w-3.5" /> All Done
                           </span>
                         )}
+                        {hasNotes && (
+                          <span className="hidden sm:inline-flex items-center gap-1 text-[10px] text-indigo-300 rounded bg-indigo-500/10 px-1.5 py-0.5 border border-indigo-500/20 font-mono">
+                            <FileText className="h-3 w-3" /> Notes
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-0.5">
                         <span className="font-mono">{day.study_date}</span>
-                        <span>•</span>
-                        <span>{day.subject}</span>
                         <span>•</span>
                         <span className="text-slate-500">{tasks.length} tasks</span>
                       </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="text-xs font-mono font-medium text-slate-400">
-                      {completedCount} / {tasks.length}
-                    </span>
-                    {isExpanded ? (
-                      <ChevronUp className="h-4 w-4 text-slate-400" />
-                    ) : (
-                      <ChevronDown className="h-4 w-4 text-slate-400" />
-                    )}
+                  {/* Day Actions */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => openDayNotesModal(day)}
+                      className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors cursor-pointer ${
+                        hasNotes
+                          ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300'
+                          : 'border-surface-border bg-surface text-slate-400 hover:text-white hover:bg-surface-elevated'
+                      }`}
+                      title={hasNotes ? 'View/Edit Day Notes' : 'Add Day Notes'}
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                    </button>
+
+                    <button
+                      onClick={() => openCreateTaskModal(day.id, day.day_number)}
+                      className="flex h-8 items-center gap-1 rounded-lg border border-surface-border bg-surface px-2.5 text-[11px] font-medium text-slate-300 hover:text-white hover:bg-surface-elevated cursor-pointer"
+                      title="Add Custom Task"
+                    >
+                      <Plus className="h-3.5 w-3.5 text-indigo-400" />
+                      <span className="hidden sm:inline">Add Task</span>
+                    </button>
+
+                    <div
+                      onClick={() => setExpandedDayId(isExpanded ? null : day.id)}
+                      className="flex items-center gap-2 pl-2 border-l border-surface-border cursor-pointer"
+                    >
+                      <span className="text-xs font-mono font-medium text-slate-400">
+                        {completedCount} / {tasks.length}
+                      </span>
+                      {isExpanded ? (
+                        <ChevronUp className="h-4 w-4 text-slate-400" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-slate-400" />
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 {/* Day Expanded Task List */}
                 {isExpanded && (
                   <div className="p-4 pt-0 border-t border-surface-border/60 mt-2 space-y-3">
+                    {/* Day Notes Snippet if present */}
+                    {hasNotes && (
+                      <div className="mt-3 rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3 text-xs text-slate-300">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 block mb-1">
+                          Day Notes & Reflection
+                        </span>
+                        <p className="whitespace-pre-line text-slate-300 text-[11px] leading-relaxed">
+                          {day.notes}
+                        </p>
+                      </div>
+                    )}
+
                     <div className="mt-3 space-y-2">
                       {tasks.map((task) => (
                         <div
@@ -317,15 +484,22 @@ export default function PlannerPage() {
                               className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                             />
                             <div className="flex-1 min-w-0 pr-3">
-                              <span
-                                className={`font-semibold block ${
-                                  task.is_completed
-                                    ? 'line-through text-slate-400'
-                                    : 'text-slate-100'
-                                }`}
-                              >
-                                {task.task_title}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`font-semibold ${
+                                    task.is_completed
+                                      ? 'line-through text-slate-400'
+                                      : 'text-slate-100'
+                                  }`}
+                                >
+                                  {task.task_title}
+                                </span>
+                                {task.curriculum_task_key && (
+                                  <span className="font-mono text-[9px] text-slate-500 rounded bg-slate-800 px-1.5 py-0.2">
+                                    {task.curriculum_task_key}
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
                                 {task.description}
                               </p>
@@ -337,15 +511,46 @@ export default function PlannerPage() {
                             </div>
                           </div>
 
+                          {/* Task Right Actions */}
                           <div className="flex items-center gap-2 shrink-0">
                             <span className="flex items-center gap-1 font-mono text-[11px] text-slate-400">
                               <Clock className="h-3 w-3 text-slate-500" />
                               {task.estimated_minutes}m
                             </span>
+
                             <StatusBadge
                               status={task.is_completed ? 'Completed' : 'Not Started'}
                               className="text-[10px]"
                             />
+
+                            {/* Reschedule Button */}
+                            {!task.is_completed && (
+                              <button
+                                onClick={() => openRescheduleModal(task)}
+                                className="flex h-7 w-7 items-center justify-center rounded-lg border border-surface-border bg-surface text-slate-400 hover:text-amber-400 hover:border-amber-500/30 cursor-pointer"
+                                title="Carry forward to another day or backlog"
+                              >
+                                <ArrowLeftRight className="h-3 w-3" />
+                              </button>
+                            )}
+
+                            {/* Edit Button */}
+                            <button
+                              onClick={() => openEditTaskModal(task)}
+                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-surface-border bg-surface text-slate-400 hover:text-white hover:bg-surface-elevated cursor-pointer"
+                              title="Edit task details"
+                            >
+                              <Edit2 className="h-3 w-3" />
+                            </button>
+
+                            {/* Delete Button */}
+                            <button
+                              onClick={() => promptDeleteTask(task)}
+                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-surface-border bg-surface text-slate-400 hover:text-rose-400 hover:border-rose-500/30 cursor-pointer"
+                              title="Delete task"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
                           </div>
                         </div>
                       ))}
@@ -357,6 +562,42 @@ export default function PlannerPage() {
           })}
         </div>
       )}
+
+      {/* Modals */}
+      <TaskModal
+        isOpen={taskModalOpen}
+        mode={taskModalMode}
+        task={activeTask}
+        dayNumber={activeDayNumber}
+        onSave={handleSaveTask}
+        onClose={() => setTaskModalOpen(false)}
+      />
+
+      <CarryForwardModal
+        isOpen={rescheduleModalOpen}
+        task={activeTask}
+        allDays={allDaysBasic}
+        onReschedule={handleReschedule}
+        onClose={() => setRescheduleModalOpen(false)}
+      />
+
+      <DayNotesModal
+        isOpen={notesModalOpen}
+        day={activeNotesDay}
+        onSaveNotes={handleSaveDayNotes}
+        onClose={() => setNotesModalOpen(false)}
+      />
+
+      <ConfirmModal
+        isOpen={deleteModalOpen}
+        title="Delete Learning Task?"
+        message={`Are you sure you want to delete "${taskToDelete?.task_title}"?`}
+        confirmText="Yes, Delete"
+        confirmVariant="danger"
+        loading={actionLoading}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setDeleteModalOpen(false)}
+      />
     </div>
   );
 }
