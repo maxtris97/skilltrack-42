@@ -90,10 +90,24 @@ export async function createDsaProblem(userId, problemData) {
   try {
     const today = getIndiaTodayDate();
     const isSolved = problemData.status === 'Solved';
+    const trimmedName = problemData.problem_name.trim();
+
+    // Duplicate check: case-insensitive & trimmed
+    const { data: existing } = await supabase
+      .from('dsa_problems')
+      .select('id, problem_name')
+      .eq('user_id', userId)
+      .ilike('problem_name', trimmedName);
+
+    if (existing && existing.length > 0) {
+      throw new Error(
+        `A problem titled "${existing[0].problem_name}" has already been logged. You can edit the existing entry.`
+      );
+    }
 
     const payload = {
       user_id: userId,
-      problem_name: problemData.problem_name.trim(),
+      problem_name: trimmedName,
       problem_url: problemData.problem_url?.trim() || '',
       topic: problemData.topic || 'Arrays',
       pattern: problemData.pattern || '',
@@ -154,11 +168,16 @@ export async function updateDsaProblem(problemId, updates) {
     if (updates.language !== undefined) payload.language = updates.language;
     if (updates.status !== undefined) {
       payload.status = updates.status;
-      if (updates.status === 'Solved' && !updates.solved_date) {
-        payload.solved_date = today;
-      } else if (updates.status !== 'Solved' && updates.status !== 'Needs Revision') {
+      if (updates.status === 'Solved') {
+        // Preserve original solved_date if provided (e.g. editing an already solved problem);
+        // otherwise default to current India date for new Solved transitions.
+        payload.solved_date = updates.solved_date || today;
+      } else {
+        // Solved -> Attempted, Solved -> Needs Revision, Solved -> Not Started all clear solved_date
         payload.solved_date = null;
       }
+    } else if (updates.solved_date !== undefined) {
+      payload.solved_date = updates.solved_date;
     }
     if (updates.approach !== undefined) payload.approach = updates.approach.trim();
     if (updates.brute_force_approach !== undefined) payload.brute_force_approach = updates.brute_force_approach.trim();
@@ -213,7 +232,7 @@ export async function quickUpdateDsaStatus(problemId, newStatus) {
   const today = getIndiaTodayDate();
   return updateDsaProblem(problemId, {
     status: newStatus,
-    solved_date: newStatus === 'Solved' ? today : undefined,
+    solved_date: newStatus === 'Solved' ? today : null,
   });
 }
 

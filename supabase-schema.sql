@@ -227,7 +227,7 @@ CREATE TABLE IF NOT EXISTS public.dsa_problems (
     CONSTRAINT unique_user_problem_name UNIQUE (user_id, problem_name)
 );
 
--- Idempotent constraint addition for existing databases
+-- Idempotent constraint and case-insensitive unique index for duplicate prevention
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -236,6 +236,10 @@ BEGIN
         ALTER TABLE public.dsa_problems ADD CONSTRAINT unique_user_problem_name UNIQUE (user_id, problem_name);
     END IF;
 END $$;
+
+-- Case-insensitive & trimmed duplicate barrier for problem names
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dsa_problems_user_problem_name_ci 
+ON public.dsa_problems(user_id, LOWER(TRIM(problem_name)));
 
 DROP TRIGGER IF EXISTS trg_dsa_problems_updated_at ON public.dsa_problems;
 CREATE TRIGGER trg_dsa_problems_updated_at
