@@ -107,13 +107,14 @@ CREATE TABLE IF NOT EXISTS public.learning_tasks (
     scheduled_date DATE NOT NULL,
     is_carried_forward BOOLEAN DEFAULT FALSE,
     is_backlog BOOLEAN DEFAULT FALSE, -- Flag for tasks carried beyond Day 42 into unscheduled backlog
+    curriculum_task_key TEXT, -- Stable identity key for original curriculum tasks (e.g. 'D01-T01'). NULL for custom tasks.
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     -- Composite FK: Enforces learning_day belongs to the EXACT SAME user (matches if learning_day_id is not null)
     CONSTRAINT fk_tasks_learning_day_user FOREIGN KEY (user_id, learning_day_id)
         REFERENCES public.learning_days(user_id, id) ON DELETE CASCADE,
     CONSTRAINT unique_user_task_id UNIQUE (user_id, id),
-    CONSTRAINT unique_user_day_task_title UNIQUE (user_id, learning_day_id, task_title)
+    CONSTRAINT unique_user_curriculum_task_key UNIQUE (user_id, curriculum_task_key)
 );
 
 DROP TRIGGER IF EXISTS trg_learning_tasks_updated_at ON public.learning_tasks;
@@ -238,6 +239,7 @@ CREATE INDEX IF NOT EXISTS idx_learning_days_user_date ON public.learning_days(u
 CREATE INDEX IF NOT EXISTS idx_learning_tasks_user_day ON public.learning_tasks(user_id, learning_day_id);
 CREATE INDEX IF NOT EXISTS idx_learning_tasks_scheduled ON public.learning_tasks(user_id, scheduled_date);
 CREATE INDEX IF NOT EXISTS idx_learning_tasks_backlog ON public.learning_tasks(user_id, is_backlog);
+CREATE INDEX IF NOT EXISTS idx_learning_tasks_curriculum_key ON public.learning_tasks(user_id, curriculum_task_key);
 CREATE INDEX IF NOT EXISTS idx_topic_understanding_user_status ON public.topic_understanding(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_dsa_problems_user_status ON public.dsa_problems(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_learning_notes_user_subject ON public.learning_notes(user_id, subject);
@@ -284,7 +286,7 @@ BEGIN
 END $$;
 
 -- -------------------------------------------------------------------------
--- 11. TRANSACTIONAL CURRICULUM SEEDING RPC FUNCTION
+-- 11. TRANSACTIONAL CURRICULUM SEEDING RPC FUNCTION (CONCURRENT-SAFE & STABLE KEYS)
 -- -------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.seed_user_curriculum(p_days jsonb)
 RETURNS jsonb
@@ -297,62 +299,77 @@ DECLARE
     v_day_elem jsonb;
     v_task_elem jsonb;
     v_day_id UUID;
+    v_task_key TEXT;
     v_existing_task_id UUID;
     v_days_inserted INT := 0;
     v_days_existing INT := 0;
     v_tasks_inserted INT := 0;
     v_tasks_existing INT := 0;
 BEGIN
-    -- 1. Enforce authenticated user identity
+    -- 1. Strictly enforce authenticated user identity
     v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'Authentication required to seed curriculum';
     END IF;
 
-    -- 2. Transactionally process days and tasks
+    -- 2. Acquire exclusive transaction-level advisory lock per user to serialize concurrent calls
+    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(v_user_id::text));
+
+    -- 3. Transactionally process days and tasks
     FOR v_day_elem IN SELECT * FROM jsonb_array_elements(p_days)
     LOOP
-        -- Check if day already exists for this user
-        SELECT id INTO v_day_id
-        FROM public.learning_days
-        WHERE user_id = v_user_id
-          AND day_number = (v_day_elem->>'day_number')::INT;
+        -- Insert day or retrieve existing day ID
+        INSERT INTO public.learning_days (
+            user_id,
+            day_number,
+            study_date,
+            week_number,
+            title,
+            status,
+            notes
+        ) VALUES (
+            v_user_id,
+            (v_day_elem->>'day_number')::INT,
+            (v_day_elem->>'study_date')::DATE,
+            (v_day_elem->>'week_number')::INT,
+            v_day_elem->>'title',
+            'Not Started',
+            ''
+        )
+        ON CONFLICT (user_id, day_number) DO NOTHING
+        RETURNING id INTO v_day_id;
 
         IF v_day_id IS NULL THEN
-            INSERT INTO public.learning_days (
-                user_id,
-                day_number,
-                study_date,
-                week_number,
-                title,
-                status,
-                notes
-            ) VALUES (
-                v_user_id,
-                (v_day_elem->>'day_number')::INT,
-                (v_day_elem->>'study_date')::DATE,
-                (v_day_elem->>'week_number')::INT,
-                v_day_elem->>'title',
-                'Not Started',
-                ''
-            )
-            RETURNING id INTO v_day_id;
+            -- Day already exists, fetch its ID
+            SELECT id INTO v_day_id
+            FROM public.learning_days
+            WHERE user_id = v_user_id
+              AND day_number = (v_day_elem->>'day_number')::INT;
 
-            v_days_inserted := v_days_inserted + 1;
-        ELSE
             v_days_existing := v_days_existing + 1;
+        ELSE
+            v_days_inserted := v_days_inserted + 1;
         END IF;
 
-        -- Process associated tasks for this day
+        -- Process tasks for this day
         IF v_day_elem ? 'tasks' AND jsonb_typeof(v_day_elem->'tasks') = 'array' THEN
             FOR v_task_elem IN SELECT * FROM jsonb_array_elements(v_day_elem->'tasks')
             LOOP
-                -- Check if task already exists for this day and user with matching title
-                SELECT id INTO v_existing_task_id
-                FROM public.learning_tasks
-                WHERE user_id = v_user_id
-                  AND learning_day_id = v_day_id
-                  AND task_title = v_task_elem->>'task_title';
+                v_task_key := v_task_elem->>'curriculum_task_key';
+
+                -- Check if task already exists by stable curriculum_task_key
+                IF v_task_key IS NOT NULL THEN
+                    SELECT id INTO v_existing_task_id
+                    FROM public.learning_tasks
+                    WHERE user_id = v_user_id
+                      AND curriculum_task_key = v_task_key;
+                ELSE
+                    SELECT id INTO v_existing_task_id
+                    FROM public.learning_tasks
+                    WHERE user_id = v_user_id
+                      AND learning_day_id = v_day_id
+                      AND task_title = v_task_elem->>'task_title';
+                END IF;
 
                 IF v_existing_task_id IS NULL THEN
                     INSERT INTO public.learning_tasks (
@@ -368,7 +385,8 @@ BEGIN
                         original_date,
                         scheduled_date,
                         is_carried_forward,
-                        is_backlog
+                        is_backlog,
+                        curriculum_task_key
                     ) VALUES (
                         v_user_id,
                         v_day_id,
@@ -382,11 +400,14 @@ BEGIN
                         (v_day_elem->>'study_date')::DATE,
                         (v_day_elem->>'study_date')::DATE,
                         FALSE,
-                        FALSE
-                    );
+                        FALSE,
+                        v_task_key
+                    )
+                    ON CONFLICT (user_id, curriculum_task_key) DO NOTHING;
 
                     v_tasks_inserted := v_tasks_inserted + 1;
                 ELSE
+                    -- Existing task preserved (custom title, completion, notes untouched)
                     v_tasks_existing := v_tasks_existing + 1;
                 END IF;
             END LOOP;

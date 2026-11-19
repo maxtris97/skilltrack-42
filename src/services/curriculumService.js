@@ -1,7 +1,7 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { CURRICULUM_42_DAYS } from '../data/curriculum42Days';
 
-// Guard against simultaneous duplicate seeding requests
+// In-flight guard to prevent multiple concurrent seeding calls in the client
 let isSeedingInProgress = false;
 
 /**
@@ -44,140 +44,79 @@ export async function checkCurriculumStatus(userId) {
 }
 
 /**
- * Transactional curriculum seeding using PostgreSQL RPC function.
- * If RPC is not yet created in the database, falls back to safe client-side batching.
- * Idempotent: Never overwrites existing user progress, notes, or modified tasks.
+ * Production Transactional Curriculum Seeder.
+ * Exclusively executes the PostgreSQL RPC function `seed_user_curriculum`.
+ *
+ * Guarantees:
+ * - Single atomic database transaction (all-or-nothing rollback).
+ * - Concurrent-safe with per-user transaction advisory locks.
+ * - Stable task identity via `curriculum_task_key` (D01-T01, etc.).
+ * - Editing a task title never causes duplication.
+ * - Custom tasks (with curriculum_task_key = NULL) remain untouched.
+ * - No weak client-side fallbacks with non-atomic multiple inserts.
  */
 export async function seedCurriculum(userId) {
   if (!isSupabaseConfigured || !supabase || !userId) {
-    return { success: false, error: 'Supabase is not configured or user is unauthenticated.' };
+    return {
+      success: false,
+      error: 'Supabase is not configured or user is unauthenticated. Please check your credentials.',
+    };
   }
 
   if (isSeedingInProgress) {
-    return { success: false, error: 'A curriculum seeding operation is already in progress.' };
+    return {
+      success: false,
+      error: 'Curriculum seeding is already in progress. Please wait for the current operation to finish.',
+    };
   }
 
   isSeedingInProgress = true;
 
   try {
-    // 1. Primary Path: Call PostgreSQL RPC function `seed_user_curriculum`
     const { data: rpcResult, error: rpcError } = await supabase.rpc('seed_user_curriculum', {
       p_days: CURRICULUM_42_DAYS,
     });
 
-    if (!rpcError && rpcResult) {
-      return {
-        success: true,
-        daysInserted: rpcResult.days_inserted ?? 0,
-        daysExisting: rpcResult.days_existing ?? 0,
-        tasksInserted: rpcResult.tasks_inserted ?? 0,
-        tasksExisting: rpcResult.tasks_existing ?? 0,
-        method: 'rpc',
-      };
+    if (rpcError) {
+      // Check if function does not exist in PostgreSQL
+      if (
+        rpcError.code === 'PGRST202' ||
+        rpcError.message?.includes('function') ||
+        rpcError.message?.includes('does not exist')
+      ) {
+        throw new Error(
+          "Database function 'seed_user_curriculum' is not installed in your Supabase project. " +
+          "Please open your Supabase SQL Editor, run the entire 'supabase-schema.sql' script, and retry."
+        );
+      }
+      throw new Error(rpcError.message || 'PostgreSQL curriculum seeding failed.');
     }
 
-    // If RPC failed due to function not existing, fallback to safe client-side idempotent seeding
-    console.warn('RPC seed_user_curriculum not found or errored. Using fallback idempotent seeder:', rpcError?.message);
-
-    let daysInserted = 0;
-    let daysExisting = 0;
-    let tasksInserted = 0;
-    let tasksExisting = 0;
-
-    // Fetch existing days to avoid duplicate inserts
-    const { data: existingDays, error: fetchErr } = await supabase
-      .from('learning_days')
-      .select('id, day_number')
-      .eq('user_id', userId);
-
-    if (fetchErr) throw fetchErr;
-
-    const dayMap = new Map((existingDays || []).map((d) => [d.day_number, d.id]));
-
-    // 2. Insert any missing days
-    for (const day of CURRICULUM_42_DAYS) {
-      let dayId = dayMap.get(day.day_number);
-
-      if (!dayId) {
-        const { data: newDay, error: insertDayErr } = await supabase
-          .from('learning_days')
-          .insert({
-            user_id: userId,
-            day_number: day.day_number,
-            study_date: day.study_date,
-            week_number: day.week_number,
-            title: day.title,
-            status: 'Not Started',
-            notes: '',
-          })
-          .select('id')
-          .single();
-
-        if (insertDayErr) throw insertDayErr;
-        dayId = newDay.id;
-        dayMap.set(day.day_number, dayId);
-        daysInserted++;
-      } else {
-        daysExisting++;
-      }
-
-      // 3. Insert any missing tasks for this day
-      if (day.tasks && day.tasks.length > 0) {
-        const { data: existingTasks } = await supabase
-          .from('learning_tasks')
-          .select('id, task_title')
-          .eq('user_id', userId)
-          .eq('learning_day_id', dayId);
-
-        const taskSet = new Set((existingTasks || []).map((t) => t.task_title));
-
-        for (const task of day.tasks) {
-          if (!taskSet.has(task.task_title)) {
-            const { error: insertTaskErr } = await supabase
-              .from('learning_tasks')
-              .insert({
-                user_id: userId,
-                learning_day_id: dayId,
-                subject: task.subject,
-                topic: task.topic,
-                task_title: task.task_title,
-                description: task.description || '',
-                estimated_minutes: task.estimated_minutes || 30,
-                is_completed: false,
-                task_status: 'Not Started',
-                original_date: day.study_date,
-                scheduled_date: day.study_date,
-                is_carried_forward: false,
-                is_backlog: false,
-              });
-
-            if (insertTaskErr) throw insertTaskErr;
-            tasksInserted++;
-          } else {
-            tasksExisting++;
-          }
-        }
-      }
+    if (!rpcResult || !rpcResult.success) {
+      throw new Error('RPC completed without success confirmation.');
     }
 
     return {
       success: true,
-      daysInserted,
-      daysExisting,
-      tasksInserted,
-      tasksExisting,
-      method: 'client-fallback',
+      daysInserted: rpcResult.days_inserted ?? 0,
+      daysExisting: rpcResult.days_existing ?? 0,
+      tasksInserted: rpcResult.tasks_inserted ?? 0,
+      tasksExisting: rpcResult.tasks_existing ?? 0,
+      method: 'postgresql-rpc-atomic',
     };
   } catch (err) {
-    console.error('Fatal error during curriculum seeding:', err);
-    return { success: false, error: err.message || 'Seeding failed' };
+    console.error('Curriculum seeding RPC failure:', err);
+    return {
+      success: false,
+      error: err.message || 'Seeding failed. Please check database permissions.',
+    };
   } finally {
     isSeedingInProgress = false;
   }
 }
 
 /**
- * Fetches all curriculum days with their nested tasks, optionally filtered by week_number.
+ * Fetches all curriculum days with nested tasks, optionally filtered by week_number.
  */
 export async function fetchCurriculumDays(userId, weekNumber = null) {
   if (!isSupabaseConfigured || !supabase || !userId) {
@@ -211,7 +150,8 @@ export async function fetchCurriculumDays(userId, weekNumber = null) {
           original_date,
           scheduled_date,
           is_carried_forward,
-          is_backlog
+          is_backlog,
+          curriculum_task_key
         )
       `)
       .eq('user_id', userId)
@@ -232,7 +172,7 @@ export async function fetchCurriculumDays(userId, weekNumber = null) {
 }
 
 /**
- * Updates a specific task's completion status without affecting other fields.
+ * Updates a specific task's completion status.
  */
 export async function toggleTaskCompletion(taskId, isCompleted) {
   if (!isSupabaseConfigured || !supabase || !taskId) {
