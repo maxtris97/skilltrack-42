@@ -8,8 +8,9 @@ const env =
     ? process.env
     : {};
 
-const supabaseUrl = env.VITE_SUPABASE_URL;
-const supabaseAnonKey = env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const rawUrl = (env.VITE_SUPABASE_URL || '').trim();
+const supabaseUrl = rawUrl ? rawUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '') : '';
+const supabaseAnonKey = (env.VITE_SUPABASE_PUBLISHABLE_KEY || '').trim();
 
 /**
  * Checks whether valid Supabase credentials have been supplied.

@@ -41,8 +41,17 @@ export default function SettingsPage() {
       setSyncLoading(false);
     }
   };
+  const [displayName, setDisplayName] = useState(profile?.display_name || '');
   const [dailyGoal, setDailyGoal] = useState(profile?.daily_goal_minutes || 120);
   const [dsaTarget, setDsaTarget] = useState(profile?.target_dsa_count || 50);
+
+  React.useEffect(() => {
+    if (profile) {
+      if (profile.display_name !== undefined) setDisplayName(profile.display_name || '');
+      if (profile.daily_goal_minutes !== undefined) setDailyGoal(profile.daily_goal_minutes || 120);
+      if (profile.target_dsa_count !== undefined) setDsaTarget(profile.target_dsa_count || 50);
+    }
+  }, [profile]);
 
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
