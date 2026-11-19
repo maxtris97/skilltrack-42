@@ -350,6 +350,7 @@ CREATE INDEX IF NOT EXISTS idx_dsa_problems_user_pattern ON public.dsa_problems(
 CREATE INDEX IF NOT EXISTS idx_learning_notes_user_subject ON public.learning_notes(user_id, subject);
 CREATE INDEX IF NOT EXISTS idx_learning_notes_topic_id ON public.learning_notes(topic_id);
 CREATE INDEX IF NOT EXISTS idx_study_logs_user_date ON public.study_logs(user_id, study_date);
+CREATE INDEX IF NOT EXISTS idx_study_logs_user_subject ON public.study_logs(user_id, subject);
 
 -- -------------------------------------------------------------------------
 -- 10. ROW-LEVEL SECURITY (RLS) POLICIES
