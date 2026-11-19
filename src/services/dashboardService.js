@@ -27,8 +27,13 @@ export async function fetchDashboardData(userId) {
       totalCurriculumTasks: 0,
       completedCurriculumTasks: 0,
       overallProgress: 0,
+      totalTopicsTracked: 0,
       confidentTopicsCount: 0,
       needsPracticeCount: 0,
+      learningTopicsCount: 0,
+      dueRevisionCount: 0,
+      overdueRevisionCount: 0,
+      upcomingRevisionCount: 0,
       subjectBreakdown: [],
       todayFocus: null,
       backlogCount: 0,
@@ -71,10 +76,10 @@ export async function fetchDashboardData(userId) {
 
     if (dsaErr) throw dsaErr;
 
-    // 5. Fetch Topic Understanding counts
+    // 5. Fetch Topic Understanding counts and revision schedules
     const { data: topics, error: topicsErr } = await supabase
       .from('topic_understanding')
-      .select('id, status')
+      .select('id, status, self_rating, next_revision_date, last_revised_at')
       .eq('user_id', userId);
 
     if (topicsErr) throw topicsErr;
@@ -106,9 +111,20 @@ export async function fetchDashboardData(userId) {
       }).length;
     }
 
-    // Topic confidence metrics
+    // Topic confidence and revision metrics
+    const totalTopicsTracked = (topics || []).length;
     const confidentTopicsCount = (topics || []).filter((t) => t.status === 'Confident').length;
     const needsPracticeCount = (topics || []).filter((t) => t.status === 'Needs Practice').length;
+    const learningTopicsCount = (topics || []).filter((t) => t.status === 'Learning').length;
+    const dueRevisionCount = (topics || []).filter(
+      (t) => t.next_revision_date && t.next_revision_date <= todayDate
+    ).length;
+    const overdueRevisionCount = (topics || []).filter(
+      (t) => t.next_revision_date && t.next_revision_date < todayDate
+    ).length;
+    const upcomingRevisionCount = (topics || []).filter(
+      (t) => t.next_revision_date && t.next_revision_date > todayDate
+    ).length;
 
     // Subject breakdown calculation
     const subjectMap = {};
@@ -158,8 +174,13 @@ export async function fetchDashboardData(userId) {
       totalCurriculumTasks: totalTasksCount,
       completedCurriculumTasks: completedTasks,
       overallProgress,
+      totalTopicsTracked,
       confidentTopicsCount,
       needsPracticeCount,
+      learningTopicsCount,
+      dueRevisionCount,
+      overdueRevisionCount,
+      upcomingRevisionCount,
       subjectBreakdown,
       todayFocus: todayDay,
       backlogCount,
@@ -177,8 +198,13 @@ export async function fetchDashboardData(userId) {
       totalCurriculumTasks: 0,
       completedCurriculumTasks: 0,
       overallProgress: 0,
+      totalTopicsTracked: 0,
       confidentTopicsCount: 0,
       needsPracticeCount: 0,
+      learningTopicsCount: 0,
+      dueRevisionCount: 0,
+      overdueRevisionCount: 0,
+      upcomingRevisionCount: 0,
       subjectBreakdown: [],
       todayFocus: null,
       backlogCount: 0,

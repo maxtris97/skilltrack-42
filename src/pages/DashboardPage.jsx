@@ -266,7 +266,7 @@ export default function DashboardPage() {
         <StatCard
           title="Confident Topics"
           value={`${dashboardData?.confidentTopicsCount || 0}`}
-          subtitle="Self-rated: Confident"
+          subtitle={`${dashboardData?.totalTopicsTracked || 0} evaluated • ${dashboardData?.needsPracticeCount || 0} weak`}
           icon={Brain}
           accentColor="text-violet-400"
           bgColor="bg-violet-500/10"
@@ -467,6 +467,78 @@ export default function DashboardPage() {
             <span className="font-semibold text-slate-300 block mb-1">Strict Metric Rule:</span>
             Only problems marked <strong className="text-emerald-400 font-medium">Solved</strong> count toward your targets. Attempted and Needs Revision are tracked separately.
           </div>
+        </div>
+      </div>
+
+      {/* Topic Understanding & Revision Snapshot (Phase 5) */}
+      <div className="rounded-2xl border border-surface-border bg-surface p-6 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-surface-border gap-2">
+          <div>
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Brain className="h-4 w-4 text-violet-400" />
+              Topic Understanding & Revision Status
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Honest self-assessments independent of task completion.
+            </p>
+          </div>
+          <Link
+            to="/topics"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-violet-400 hover:text-violet-300 transition-colors"
+          >
+            Open Topic Tracker <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Link
+            to="/topics?filter=all"
+            className="rounded-xl border border-surface-border bg-surface-subtle/60 p-3.5 hover:border-violet-500/40 transition-colors"
+          >
+            <span className="text-[11px] text-slate-400 uppercase tracking-wider block">Total Topics Tracked</span>
+            <span className="text-xl font-bold font-mono text-white mt-1 block">
+              {dashboardData?.totalTopicsTracked || 0}
+            </span>
+          </Link>
+
+          <Link
+            to="/topics?filter=confident"
+            className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3.5 hover:border-emerald-500/40 transition-colors"
+          >
+            <span className="text-[11px] text-emerald-400 uppercase tracking-wider block">Confident (Rating 4-5)</span>
+            <span className="text-xl font-bold font-mono text-emerald-400 mt-1 block">
+              {dashboardData?.confidentTopicsCount || 0}
+            </span>
+          </Link>
+
+          <Link
+            to="/topics?filter=needs_practice"
+            className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 hover:border-amber-500/40 transition-colors"
+          >
+            <span className="text-[11px] text-amber-400 uppercase tracking-wider block">Needs Practice</span>
+            <span className="text-xl font-bold font-mono text-amber-400 mt-1 block">
+              {dashboardData?.needsPracticeCount || 0}
+            </span>
+          </Link>
+
+          <Link
+            to="/topics?filter=due"
+            className={`rounded-xl border p-3.5 transition-colors ${
+              (dashboardData?.dueRevisionCount || 0) > 0
+                ? 'border-rose-500/30 bg-rose-500/10 hover:border-rose-500/50'
+                : 'border-surface-border bg-surface-subtle/60 hover:border-surface-elevated'
+            }`}
+          >
+            <span className="text-[11px] text-rose-400 uppercase tracking-wider block">Due for Revision</span>
+            <span className="text-xl font-bold font-mono text-rose-400 mt-1 block">
+              {dashboardData?.dueRevisionCount || 0}
+            </span>
+            {(dashboardData?.overdueRevisionCount || 0) > 0 && (
+              <span className="text-[10px] text-rose-400/80 font-medium">
+                {dashboardData.overdueRevisionCount} overdue
+              </span>
+            )}
+          </Link>
         </div>
       </div>
 

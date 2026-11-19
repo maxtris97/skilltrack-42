@@ -153,12 +153,18 @@ CREATE TABLE IF NOT EXISTS public.topic_understanding (
     questions TEXT DEFAULT '',
     mistakes TEXT DEFAULT '',
     practice_required TEXT DEFAULT '',
+    practice_examples TEXT DEFAULT '',
+    personal_notes TEXT DEFAULT '',
     last_revised_at DATE,
     next_revision_date DATE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT unique_user_subject_topic UNIQUE (user_id, subject, topic)
 );
+
+-- Idempotent column additions for existing databases
+ALTER TABLE public.topic_understanding ADD COLUMN IF NOT EXISTS practice_examples TEXT DEFAULT '';
+ALTER TABLE public.topic_understanding ADD COLUMN IF NOT EXISTS personal_notes TEXT DEFAULT '';
 
 DROP TRIGGER IF EXISTS trg_topic_understanding_updated_at ON public.topic_understanding;
 CREATE TRIGGER trg_topic_understanding_updated_at
@@ -201,6 +207,7 @@ CREATE TRIGGER trg_dsa_problems_updated_at
 CREATE TABLE IF NOT EXISTS public.learning_notes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    topic_id UUID REFERENCES public.topic_understanding(id) ON DELETE SET NULL,
     title TEXT NOT NULL,
     subject TEXT NOT NULL,
     topic TEXT NOT NULL,
@@ -211,6 +218,9 @@ CREATE TABLE IF NOT EXISTS public.learning_notes (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Idempotent column addition for existing databases
+ALTER TABLE public.learning_notes ADD COLUMN IF NOT EXISTS topic_id UUID REFERENCES public.topic_understanding(id) ON DELETE SET NULL;
 
 DROP TRIGGER IF EXISTS trg_learning_notes_updated_at ON public.learning_notes;
 CREATE TRIGGER trg_learning_notes_updated_at
@@ -241,8 +251,10 @@ CREATE INDEX IF NOT EXISTS idx_learning_tasks_scheduled ON public.learning_tasks
 CREATE INDEX IF NOT EXISTS idx_learning_tasks_backlog ON public.learning_tasks(user_id, is_backlog);
 CREATE INDEX IF NOT EXISTS idx_learning_tasks_curriculum_key ON public.learning_tasks(user_id, curriculum_task_key);
 CREATE INDEX IF NOT EXISTS idx_topic_understanding_user_status ON public.topic_understanding(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_topic_understanding_revision_date ON public.topic_understanding(user_id, next_revision_date);
 CREATE INDEX IF NOT EXISTS idx_dsa_problems_user_status ON public.dsa_problems(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_learning_notes_user_subject ON public.learning_notes(user_id, subject);
+CREATE INDEX IF NOT EXISTS idx_learning_notes_topic_id ON public.learning_notes(topic_id);
 CREATE INDEX IF NOT EXISTS idx_study_logs_user_date ON public.study_logs(user_id, study_date);
 
 -- -------------------------------------------------------------------------
