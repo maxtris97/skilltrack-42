@@ -12,6 +12,21 @@ export function getIndiaTodayDate() {
 }
 
 /**
+ * Returns a future date in Indian Standard Time (IST / Asia/Kolkata) as 'YYYY-MM-DD'.
+ */
+export function getIndiaFutureDate(daysAhead = 0) {
+  try {
+    const d = new Date();
+    d.setDate(d.getDate() + daysAhead);
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+  } catch (err) {
+    const d = new Date();
+    d.setDate(d.getDate() + daysAhead);
+    return d.toISOString().split('T')[0];
+  }
+}
+
+/**
  * Fetches all live aggregated dashboard metrics for the authenticated user.
  * Zero hardcoded statistics: all figures derived from actual Supabase records.
  */

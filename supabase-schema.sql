@@ -159,17 +159,47 @@ CREATE TABLE IF NOT EXISTS public.topic_understanding (
     next_revision_date DATE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT unique_user_subject_topic UNIQUE (user_id, subject, topic)
+    CONSTRAINT unique_user_subject_topic UNIQUE (user_id, subject, topic),
+    CONSTRAINT unique_user_topic_id UNIQUE (user_id, id)
 );
 
 -- Idempotent column additions for existing databases
 ALTER TABLE public.topic_understanding ADD COLUMN IF NOT EXISTS practice_examples TEXT DEFAULT '';
 ALTER TABLE public.topic_understanding ADD COLUMN IF NOT EXISTS personal_notes TEXT DEFAULT '';
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'unique_user_topic_id'
+    ) THEN
+        ALTER TABLE public.topic_understanding ADD CONSTRAINT unique_user_topic_id UNIQUE (user_id, id);
+    END IF;
+END $$;
+
 DROP TRIGGER IF EXISTS trg_topic_understanding_updated_at ON public.topic_understanding;
 CREATE TRIGGER trg_topic_understanding_updated_at
     BEFORE UPDATE ON public.topic_understanding
     FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- Safe unlinking of notes on topic deletion (prevents accidental note deletion)
+CREATE OR REPLACE FUNCTION public.handle_topic_deletion_notes()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+    UPDATE public.learning_notes
+    SET topic_id = NULL
+    WHERE topic_id = OLD.id AND user_id = OLD.user_id;
+    RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_topic_deletion_unlink_notes ON public.topic_understanding;
+CREATE TRIGGER trg_topic_deletion_unlink_notes
+    BEFORE DELETE ON public.topic_understanding
+    FOR EACH ROW EXECUTE FUNCTION public.handle_topic_deletion_notes();
 
 -- -------------------------------------------------------------------------
 -- 6. DSA PROBLEMS TRACKER (Strict 'Solved' metric isolation)
@@ -226,6 +256,31 @@ DROP TRIGGER IF EXISTS trg_learning_notes_updated_at ON public.learning_notes;
 CREATE TRIGGER trg_learning_notes_updated_at
     BEFORE UPDATE ON public.learning_notes
     FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- Strict ownership check: Prevents linking a note to another user's topic
+CREATE OR REPLACE FUNCTION public.check_note_topic_ownership()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+    IF NEW.topic_id IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM public.topic_understanding
+            WHERE id = NEW.topic_id AND user_id = NEW.user_id
+        ) THEN
+            RAISE EXCEPTION 'Security Violation: Note cannot reference a topic belonging to a different user';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_learning_notes_check_topic_owner ON public.learning_notes;
+CREATE TRIGGER trg_learning_notes_check_topic_owner
+    BEFORE INSERT OR UPDATE OF topic_id, user_id ON public.learning_notes
+    FOR EACH ROW EXECUTE FUNCTION public.check_note_topic_ownership();
 
 -- -------------------------------------------------------------------------
 -- 8. STUDY TIME TRACKER

@@ -55,6 +55,12 @@ export default function TopicCard({
         </span>
       );
     }
+  } else {
+    revisionBadge = (
+      <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-2.5 py-0.5 text-[10px] font-medium text-slate-400">
+        Unscheduled
+      </span>
+    );
   }
 
   const getSubjectColor = (subject) => {

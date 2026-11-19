@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Brain, Loader2, Sparkles, AlertCircle, HelpCircle, Bug, Code, BookOpen, Calendar } from 'lucide-react';
 import RatingStars from './RatingStars';
 import { fetchCurriculumTopicSuggestions } from '../../services/topicService';
-import { getIndiaTodayDate } from '../../services/dashboardService';
+import { getIndiaTodayDate, getIndiaFutureDate } from '../../services/dashboardService';
 
 const SUBJECTS = [
   'Java',
@@ -104,10 +104,8 @@ export default function TopicModal({
       s.topic.toLowerCase() !== topic.toLowerCase().trim()
   );
 
-  const getFutureDate = (daysAhead) => {
-    const d = new Date();
-    d.setDate(d.getDate() + daysAhead);
-    return d.toISOString().split('T')[0];
+  const handlePresetClick = (daysAhead) => {
+    setNextRevisionDate(getIndiaFutureDate(daysAhead));
   };
 
   const handleSubmit = (e) => {
@@ -446,7 +444,7 @@ export default function TopicModal({
                       <button
                         key={p.d}
                         type="button"
-                        onClick={() => setNextRevisionDate(getFutureDate(p.d))}
+                        onClick={() => handlePresetClick(p.d)}
                         className="rounded border border-surface-border bg-surface px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-violet-400"
                       >
                         {p.label}

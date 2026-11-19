@@ -257,6 +257,7 @@ export function getTopicRevisionMetrics(topics = [], todayDate = getIndiaTodayDa
     overdue,
     dueOrOverdue: dueToday + overdue,
     upcoming,
+    unscheduled: total - (dueToday + overdue + upcoming),
   };
 }
 

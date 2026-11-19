@@ -180,6 +180,9 @@ export default function TopicsPage() {
         if (statusFilter === 'upcoming') {
           return t.next_revision_date && t.next_revision_date > today;
         }
+        if (statusFilter === 'unscheduled') {
+          return !t.next_revision_date;
+        }
         if (statusFilter === 'recent') {
           return Boolean(t.last_revised_at);
         }
@@ -479,6 +482,7 @@ export default function TopicsPage() {
           { id: 'confident', label: 'Confident', count: metrics.confident },
           { id: 'due', label: 'Due for Revision', count: metrics.dueOrOverdue },
           { id: 'upcoming', label: 'Upcoming', count: metrics.upcoming },
+          { id: 'unscheduled', label: 'Unscheduled', count: metrics.unscheduled },
           { id: 'learning', label: 'In Learning', count: metrics.learning },
           { id: 'recent', label: 'Recently Revised' },
         ].map((tab) => (

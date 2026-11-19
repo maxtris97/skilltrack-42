@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, Calendar, Check, Loader2, Sparkles, Brain, Clock } from 'lucide-react';
 import RatingStars from './RatingStars';
-import { getIndiaTodayDate } from '../../services/dashboardService';
+import { getIndiaTodayDate, getIndiaFutureDate } from '../../services/dashboardService';
 
 const STATUS_OPTIONS = ['Not Started', 'Learning', 'Needs Practice', 'Confident'];
 
@@ -16,19 +16,13 @@ export default function QuickReviseModal({
 
   const today = getIndiaTodayDate();
 
-  const getFutureDate = (daysAhead) => {
-    const d = new Date();
-    d.setDate(d.getDate() + daysAhead);
-    return d.toISOString().split('T')[0];
-  };
-
-  const [nextDate, setNextDate] = useState(topic.next_revision_date || getFutureDate(3));
+  const [nextDate, setNextDate] = useState(topic.next_revision_date || getIndiaFutureDate(3));
   const [rating, setRating] = useState(topic.self_rating || 3);
   const [status, setStatus] = useState(topic.status || 'Needs Practice');
   const [revisionNotes, setRevisionNotes] = useState('');
 
   const handlePresetClick = (days) => {
-    setNextDate(getFutureDate(days));
+    setNextDate(getIndiaFutureDate(days));
   };
 
   const handleSubmit = (e) => {
