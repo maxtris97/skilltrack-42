@@ -223,8 +223,19 @@ CREATE TABLE IF NOT EXISTS public.dsa_problems (
     revision_notes TEXT DEFAULT '',
     solved_date DATE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT unique_user_problem_name UNIQUE (user_id, problem_name)
 );
+
+-- Idempotent constraint addition for existing databases
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'unique_user_problem_name'
+    ) THEN
+        ALTER TABLE public.dsa_problems ADD CONSTRAINT unique_user_problem_name UNIQUE (user_id, problem_name);
+    END IF;
+END $$;
 
 DROP TRIGGER IF EXISTS trg_dsa_problems_updated_at ON public.dsa_problems;
 CREATE TRIGGER trg_dsa_problems_updated_at
@@ -308,6 +319,8 @@ CREATE INDEX IF NOT EXISTS idx_learning_tasks_curriculum_key ON public.learning_
 CREATE INDEX IF NOT EXISTS idx_topic_understanding_user_status ON public.topic_understanding(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_topic_understanding_revision_date ON public.topic_understanding(user_id, next_revision_date);
 CREATE INDEX IF NOT EXISTS idx_dsa_problems_user_status ON public.dsa_problems(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_dsa_problems_user_difficulty ON public.dsa_problems(user_id, difficulty);
+CREATE INDEX IF NOT EXISTS idx_dsa_problems_user_pattern ON public.dsa_problems(user_id, pattern);
 CREATE INDEX IF NOT EXISTS idx_learning_notes_user_subject ON public.learning_notes(user_id, subject);
 CREATE INDEX IF NOT EXISTS idx_learning_notes_topic_id ON public.learning_notes(topic_id);
 CREATE INDEX IF NOT EXISTS idx_study_logs_user_date ON public.study_logs(user_id, study_date);
