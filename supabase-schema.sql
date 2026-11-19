@@ -237,9 +237,31 @@ BEGIN
     END IF;
 END $$;
 
--- Case-insensitive & trimmed duplicate barrier for problem names
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dsa_problems_user_problem_name_ci 
-ON public.dsa_problems(user_id, LOWER(TRIM(problem_name)));
+-- Defensive creation of case-insensitive & trimmed unique index
+DO $$
+DECLARE
+    v_dup_count INT := 0;
+BEGIN
+    -- Diagnostic pre-check: Query for existing duplicates using user_id and LOWER(TRIM(problem_name))
+    SELECT COUNT(*) INTO v_dup_count
+    FROM (
+        SELECT 1
+        FROM public.dsa_problems
+        GROUP BY user_id, LOWER(TRIM(problem_name))
+        HAVING COUNT(*) > 1
+    ) dups;
+
+    IF v_dup_count > 0 THEN
+        RAISE NOTICE 'WARNING: % duplicate DSA problem group(s) exist. Unique index idx_dsa_problems_user_problem_name_ci deferred until duplicates are resolved.', v_dup_count;
+    ELSE
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_indexes WHERE indexname = 'idx_dsa_problems_user_problem_name_ci'
+        ) THEN
+            CREATE UNIQUE INDEX idx_dsa_problems_user_problem_name_ci 
+            ON public.dsa_problems(user_id, LOWER(TRIM(problem_name)));
+        END IF;
+    END IF;
+END $$;
 
 DROP TRIGGER IF EXISTS trg_dsa_problems_updated_at ON public.dsa_problems;
 CREATE TRIGGER trg_dsa_problems_updated_at

@@ -92,16 +92,19 @@ export async function createDsaProblem(userId, problemData) {
     const isSolved = problemData.status === 'Solved';
     const trimmedName = problemData.problem_name.trim();
 
-    // Duplicate check: case-insensitive & trimmed
-    const { data: existing } = await supabase
+    // Duplicate check: exact case-insensitive & trimmed (immune to SQL pattern wildcards % and _)
+    const { data: userProblems } = await supabase
       .from('dsa_problems')
       .select('id, problem_name')
-      .eq('user_id', userId)
-      .ilike('problem_name', trimmedName);
+      .eq('user_id', userId);
 
-    if (existing && existing.length > 0) {
+    const duplicate = (userProblems || []).find(
+      (p) => p.problem_name.trim().toLowerCase() === trimmedName.toLowerCase()
+    );
+
+    if (duplicate) {
       throw new Error(
-        `A problem titled "${existing[0].problem_name}" has already been logged. You can edit the existing entry.`
+        `A problem titled "${duplicate.problem_name}" has already been logged. You can edit the existing entry.`
       );
     }
 
@@ -169,11 +172,24 @@ export async function updateDsaProblem(problemId, updates) {
     if (updates.status !== undefined) {
       payload.status = updates.status;
       if (updates.status === 'Solved') {
-        // Preserve original solved_date if provided (e.g. editing an already solved problem);
-        // otherwise default to current India date for new Solved transitions.
-        payload.solved_date = updates.solved_date || today;
+        if (updates.solved_date !== undefined) {
+          payload.solved_date = updates.solved_date;
+        } else {
+          // If solved_date was omitted during edit, inspect existing record to preserve original date
+          const { data: existing } = await supabase
+            .from('dsa_problems')
+            .select('status, solved_date')
+            .eq('id', problemId)
+            .single();
+
+          if (existing && existing.status === 'Solved' && existing.solved_date) {
+            payload.solved_date = existing.solved_date; // Preserved
+          } else {
+            payload.solved_date = today; // Transitioning to Solved
+          }
+        }
       } else {
-        // Solved -> Attempted, Solved -> Needs Revision, Solved -> Not Started all clear solved_date
+        // Solved -> Attempted, Solved -> Needs Revision, Solved -> Not Started strictly clears solved_date
         payload.solved_date = null;
       }
     } else if (updates.solved_date !== undefined) {
@@ -186,7 +202,6 @@ export async function updateDsaProblem(problemId, updates) {
     if (updates.space_complexity !== undefined) payload.space_complexity = updates.space_complexity.trim();
     if (updates.mistakes !== undefined) payload.mistakes = updates.mistakes.trim();
     if (updates.revision_notes !== undefined) payload.revision_notes = updates.revision_notes.trim();
-    if (updates.solved_date !== undefined) payload.solved_date = updates.solved_date;
 
     const { data, error } = await supabase
       .from('dsa_problems')
